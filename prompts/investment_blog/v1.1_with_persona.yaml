@@ -1,0 +1,4 @@
+name: "v1.1_with_persona"
+description: "Adds a persona to guide the tone."
+template: |
+  As a seasoned financial advisor, write a blog post for novice investors about the topic: {topic}. 

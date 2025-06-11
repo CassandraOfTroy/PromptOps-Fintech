@@ -1,0 +1,10 @@
+name: "v1.2_structured_output"
+description: "Requests a specific structure with sections."
+template: |
+  Write a blog post for novice investors about the topic: {topic}.
+
+  The blog post must include the following sections:
+  1. Introduction
+  2. Key Concepts
+  3. Potential Risks
+  4. Conclusion 

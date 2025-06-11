@@ -1,0 +1,4 @@
+name: "v1.0_simple_request"
+description: "A basic, zero-shot request for a blog post."
+template: |
+  Write a blog post about the investment topic: {topic}. 

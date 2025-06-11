@@ -1,0 +1,7 @@
+name: "v2.0_expert_tone"
+description: "A more advanced prompt demanding an expert tone and specific length."
+template: |
+  As a senior investment strategist, compose a 500-word blog post targeted at experienced investors.
+  Topic: {topic}
+  Tone: Analytical, data-driven, and forward-looking.
+  Avoid using clichés and simplify complex market dynamics clearly. 
