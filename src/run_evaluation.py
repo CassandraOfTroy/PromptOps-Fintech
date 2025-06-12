@@ -4,6 +4,7 @@ import pandas as pd
 import yaml
 import time
 import tempfile
+from datetime import datetime
 from src.llm_client import llm_client
 from src.config import config
 from src.prompt_config import get_params_for_prompt
@@ -69,11 +70,7 @@ def run_pf_evaluation(data_df):
 
     print("Running evaluations with Azure AI SDK (Coherence, Fluency, Relevance)...")
     
-    # Create a temporary file to hold the data for the evaluation SDK
-    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".jsonl", encoding="utf-8") as f:
-        data_df.to_json(f, orient="records", lines=True)
-        temp_data_path = f.name
-
+    # Try a different approach - evaluate each row individually
     model_config = {
         "api_version": config.OPENAI_API_VERSION,
         "azure_endpoint": config.AZURE_OPENAI_ENDPOINT,
@@ -85,48 +82,90 @@ def run_pf_evaluation(data_df):
     fluency_evaluator = FluencyEvaluator(model_config)
     relevance_evaluator = RelevanceEvaluator(model_config)
 
-    try:
-        eval_result = evaluate(
-            data=temp_data_path,
-            evaluators={
-                "coherence": coherence_evaluator,
-                "fluency": fluency_evaluator,
-                "relevance": relevance_evaluator,
-            },
-            # This is the key change: we map our dataframe columns (e.g., 'topic')
-            # to the names the evaluators expect (e.g., 'question').
-            # This keeps our code clean and intuitive.
-            evaluator_config={
-                "coherence": {
-                    "question": "${data.topic}",
-                    "answer": "${data.generated_text}",
-                },
-                "fluency": {
-                    "question": "${data.topic}",
-                    "answer": "${data.generated_text}",
-                },
-                "relevance": {
-                    "question": "${data.topic}",
-                    "answer": "${data.generated_text}",
-                    "context": "${data.ground_truth_keywords}",
-                },
-            },
-        )
-        
-        if "metrics_summary" not in eval_result or "results" not in eval_result:
-            print("Evaluation failed. Full result:")
-            import json
-            # Pretty print the dict
-            print(json.dumps(eval_result, indent=2))
-            return pd.DataFrame(), pd.DataFrame()
-
-        # The result object contains both summary metrics and per-row data
-        summary_df = pd.DataFrame.from_dict(eval_result["metrics_summary"], orient='index').transpose()
-        results_df = pd.DataFrame(eval_result["results"])
-        
-        return summary_df, results_df
-    finally:
-        os.remove(temp_data_path)
+    results = []
+    
+    for idx, row in data_df.iterrows():
+        try:
+            # Prepare the data for each evaluator
+            question = row['topic']
+            answer = row['generated_text']
+            context = row['ground_truth_keywords']
+            
+            print(f"Evaluating row {idx + 1}/{len(data_df)}: {row['prompt_name']} - {question[:50]}...")
+            
+            # Run each evaluator individually with correct parameter names
+            coherence_result = coherence_evaluator(query=question, response=answer)
+            fluency_result = fluency_evaluator(response=answer)
+            relevance_result = relevance_evaluator(query=question, response=answer)
+            
+            # Combine results
+            result_row = {
+                'inputs.prompt_name': row['prompt_name'],
+                'inputs.question': question,
+                'inputs.answer': answer,
+                'inputs.context': context,
+                'inputs.latency': row['latency'],
+                'inputs.cost': row['cost'],
+                'inputs.prompt_tokens': row['prompt_tokens'],
+                'inputs.completion_tokens': row['completion_tokens'],
+                'inputs.total_tokens': row['total_tokens'],
+                'outputs.coherence.score': coherence_result.get('coherence', coherence_result.get('score', 0)),
+                'outputs.fluency.score': fluency_result.get('fluency', fluency_result.get('score', 0)),
+                'outputs.relevance.score': relevance_result.get('relevance', relevance_result.get('score', 0)),
+            }
+            
+            # Add model parameters
+            for col in data_df.columns:
+                if col.startswith('param_'):
+                    result_row[f'inputs.{col}'] = row[col]
+            
+            results.append(result_row)
+            
+        except Exception as e:
+            print(f"Error evaluating row {idx}: {e}")
+            # Add a row with NaN scores for failed evaluations
+            result_row = {
+                'inputs.prompt_name': row['prompt_name'],
+                'inputs.question': row['topic'],
+                'inputs.answer': row['generated_text'],
+                'inputs.context': row['ground_truth_keywords'],
+                'inputs.latency': row['latency'],
+                'inputs.cost': row['cost'],
+                'inputs.prompt_tokens': row['prompt_tokens'],
+                'inputs.completion_tokens': row['completion_tokens'],
+                'inputs.total_tokens': row['total_tokens'],
+                'outputs.coherence.score': None,
+                'outputs.fluency.score': None,
+                'outputs.relevance.score': None,
+            }
+            
+            # Add model parameters
+            for col in data_df.columns:
+                if col.startswith('param_'):
+                    result_row[f'inputs.{col}'] = row[col]
+            
+            results.append(result_row)
+    
+    if not results:
+        print("No evaluation results generated.")
+        return pd.DataFrame(), pd.DataFrame()
+    
+    results_df = pd.DataFrame(results)
+    
+    # Create a simple summary
+    summary_data = {}
+    for metric in ['coherence', 'fluency', 'relevance']:
+        scores = results_df[f'outputs.{metric}.score'].dropna()
+        if len(scores) > 0:
+            summary_data[f'{metric}.mean'] = scores.mean()
+            summary_data[f'{metric}.std'] = scores.std()
+        else:
+            summary_data[f'{metric}.mean'] = None
+            summary_data[f'{metric}.std'] = None
+    
+    summary_df = pd.DataFrame([summary_data])
+    
+    return summary_df, results_df
 
 
 def flatten_and_clean_results(df):
@@ -134,25 +173,28 @@ def flatten_and_clean_results(df):
     Transforms the raw, nested DataFrame from the evaluation result into a clean,
     flat table suitable for analysis.
     """
-    # Create a new DataFrame to hold the cleaned data
     clean_df = pd.DataFrame()
-
-    # The raw dataframe has columns like 'inputs.topic', 'outputs.coherence.score', etc.
-    # We will extract the parts we need.
     
-    # Extract data from the 'inputs' part of the raw output
-    for col in ['prompt_name', 'topic', 'generated_text', 'ground_truth_keywords', 
-                'latency', 'cost', 'prompt_tokens', 'completion_tokens', 'total_tokens']:
+    # Extract data from the 'inputs' part of the raw output.
+    # The evaluation was run with 'question', 'answer', 'context', so we map them back.
+    if 'inputs.question' in df.columns:
+        clean_df['topic'] = df['inputs.question']
+    if 'inputs.answer' in df.columns:
+        clean_df['generated_text'] = df['inputs.answer']
+    
+    # Extract original data that was passed through
+    passthrough_cols = ['prompt_name', 'latency', 'cost', 'prompt_tokens', 'completion_tokens', 'total_tokens']
+    for col in passthrough_cols:
         if f'inputs.{col}' in df.columns:
             clean_df[col] = df[f'inputs.{col}']
 
-    # Extract model parameters (which start with 'param_')
+    # Extract model parameters
     param_cols = [c for c in df.columns if c.startswith('inputs.param_')]
     for col in param_cols:
         clean_name = col.replace('inputs.', '')
         clean_df[clean_name] = df[col]
 
-    # Extract evaluator scores from the 'outputs' part
+    # Extract evaluator scores
     if 'outputs.coherence.score' in df.columns:
         clean_df['coherence'] = df['outputs.coherence.score']
     if 'outputs.fluency.score' in df.columns:
@@ -160,21 +202,19 @@ def flatten_and_clean_results(df):
     if 'outputs.relevance.score' in df.columns:
         clean_df['relevance'] = df['outputs.relevance.score']
         
-    # Add the custom evaluator results (they are not nested)
+    # Add custom evaluator results
     if 'keyword_match_score' in df.columns:
         clean_df['keyword_match_score'] = df['keyword_match_score']
 
-    # Define the desired column order for the final report
+    # Define final column order
     final_column_order = [
         'prompt_name', 'topic', 'coherence', 'fluency', 'relevance', 'keyword_match_score',
         'latency', 'cost', 'prompt_tokens', 'completion_tokens', 'total_tokens'
     ]
-    # Add any parameter columns to the order
     param_clean_cols = [c.replace('inputs.', '') for c in param_cols]
     final_column_order.extend(param_clean_cols)
-    final_column_order.append('generated_text') # Keep the text at the end
+    final_column_order.append('generated_text')
 
-    # Reorder the dataframe, only keeping the columns that actually exist
     existing_cols = [c for c in final_column_order if c in clean_df.columns]
     
     return clean_df[existing_cols]
@@ -185,6 +225,9 @@ def main():
     if not all([config.AZURE_OPENAI_API_KEY, config.AZURE_OPENAI_ENDPOINT, config.LLM_DEPLOYMENT_NAME]):
         print("Azure OpenAI credentials are not set. Please create a .env file and set the required variables.")
         return
+
+    # Generate a timestamp for unique output file names
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     prompts = load_prompts()
     topics_df = pd.read_csv(config.EVAL_TOPICS_FILE)
@@ -201,10 +244,10 @@ def main():
         return
 
     print("Running custom evaluations (Keyword Match)...")
-    # The promptflow evaluators return the input data plus the results.
-    # We can run the custom evaluator on this combined dataframe.
+    # We must run the custom evaluator on the raw results dataframe, which contains
+    # the 'answer' and 'context' columns before they are renamed by the cleaning function.
     custom_eval_results = pf_results_df.apply(
-        lambda row: keyword_match_evaluator(row['ground_truth_keywords'], row['generated_text']), 
+        lambda row: keyword_match_evaluator(row['inputs.context'], row['inputs.answer']), 
         axis=1, 
         result_type='expand'
     )
@@ -218,14 +261,32 @@ def main():
     print("\n--- Cleaning and structuring final results ---")
     final_df = flatten_and_clean_results(raw_final_df)
 
-    os.makedirs(os.path.dirname(config.OUTPUT_FILE), exist_ok=True)
-    final_df.to_csv(config.OUTPUT_FILE, index=False)
+    # Separate the data into two dataframes for clean outputs
+    # 1. A dataframe for just the metrics, for easy analysis
+    metrics_cols = [col for col in final_df.columns if col != 'generated_text']
+    metrics_df = final_df[metrics_cols]
     
-    print(f"\nEvaluation complete. Results saved to {config.OUTPUT_FILE}")
-    print("\n--- Evaluation Metrics Summary ---")
+    # 2. A dataframe for the generated posts, for qualitative review
+    posts_cols = ['prompt_name', 'topic', 'generated_text']
+    posts_df = final_df[posts_cols]
+
+    # Define paths for the new, timestamped output files
+    output_dir = os.path.dirname(config.OUTPUT_FILE) # This gets the 'outputs' directory
+    metrics_output_file = os.path.join(output_dir, f"evaluation_metrics_{timestamp}.csv")
+    posts_output_file = os.path.join(output_dir, f"generated_posts_{timestamp}.csv")
+
+    os.makedirs(output_dir, exist_ok=True)
+    metrics_df.to_csv(metrics_output_file, index=False)
+    posts_df.to_csv(posts_output_file, index=False)
+    
+    print(f"\nEvaluation complete.")
+    print(f"✅ Metrics-only results saved to: {metrics_output_file}")
+    print(f"✅ Full generated posts saved to: {posts_output_file}")
+
+    print("\n--- Evaluation Metrics Summary (Aggregated) ---")
     print(eval_summary_df.to_string())
-    print("\n--- Sample of Full Per-Row Results ---")
-    print(final_df.head().to_string())
+    print("\n--- Sample of Metrics Table ---")
+    print(metrics_df.head().to_string())
 
 
 if __name__ == "__main__":
