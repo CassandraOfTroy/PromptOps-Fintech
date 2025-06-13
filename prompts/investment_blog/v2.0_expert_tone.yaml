@@ -4,4 +4,5 @@ template: |
   As a senior investment strategist, compose a 500-word blog post targeted at experienced investors.
   Topic: {topic}
   Tone: Analytical, data-driven, and forward-looking.
-  Avoid using clichés and simplify complex market dynamics clearly. 
+  Avoid using clichés and simplify complex market dynamics clearly.
+  Do not ask the reader any rhetorical questions.
