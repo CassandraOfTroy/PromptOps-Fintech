@@ -1,4 +1,4 @@
-name: Run Prompt Evaluation
+ame: Run Prompt Evaluation
 
 on:
   # Triggers the workflow on push or pull request events but only for the main branch
@@ -20,7 +20,7 @@ jobs:
 
     # Sets up python for use in actions
     - name: Set up Python 3.9
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v4
       with:
         python-version: '3.9'
 
@@ -42,7 +42,7 @@ jobs:
 
     # (Optional) Uploads the results as an artifact
     - name: Upload evaluation results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: evaluation-results
         path: outputs/
