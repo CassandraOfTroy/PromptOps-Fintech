@@ -10,7 +10,7 @@ from src.llm_client import llm_client
 from src.config import config
 from src.prompt_config import get_params_for_prompt
 
-# Updated to use the azure-ai-evaluation SDK
+# Use the azure-ai-evaluation SDK
 from azure.ai.evaluation import evaluate, CoherenceEvaluator, FluencyEvaluator, RelevanceEvaluator
 
 # Custom Evaluator example
@@ -205,7 +205,7 @@ def flatten_and_clean_results(df):
     
     return clean_df[existing_cols]
 
-# --- NEW: Function to validate metrics against thresholds ---
+# --- Function to validate metrics against thresholds ---
 def validate_metrics(metrics_df, thresholds):
     """
     Checks if any metric in the DataFrame is below its defined threshold.
@@ -285,7 +285,7 @@ def main():
     print("\n--- Sample of Metrics Table ---")
     print(metrics_df.head().to_string())
     
-    # --- NEW: Run the validation and exit with an error if it fails ---
+    # --- Run the validation and exit with an error if it fails ---
     failures = validate_metrics(metrics_df, config.EVALUATION_THRESHOLDS)
     if failures:
         print("\n\n--- 🚨 ACTION REQUIRED: One or more quality gates failed! ---")
