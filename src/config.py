@@ -39,7 +39,7 @@ class Config:
         "coherence": 3.5,
         "fluency": 3.5,
         "relevance": 4.0,
-        "keyword_match_score": 0.5
+        "keyword_match_score": 0.2
     }
 
 config = Config()
