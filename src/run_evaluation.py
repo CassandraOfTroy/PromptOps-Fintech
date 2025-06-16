@@ -4,12 +4,13 @@ import pandas as pd
 import yaml
 import time
 import tempfile
+import sys # Import the sys module to exit the script
 from datetime import datetime
 from src.llm_client import llm_client
 from src.config import config
 from src.prompt_config import get_params_for_prompt
 
-# Updated to use the azure-ai-evaluation SDK
+# Use the azure-ai-evaluation SDK
 from azure.ai.evaluation import evaluate, CoherenceEvaluator, FluencyEvaluator, RelevanceEvaluator
 
 # Custom Evaluator example
@@ -70,7 +71,6 @@ def run_pf_evaluation(data_df):
 
     print("Running evaluations with Azure AI SDK (Coherence, Fluency, Relevance)...")
     
-    # Try a different approach - evaluate each row individually
     model_config = {
         "api_version": config.OPENAI_API_VERSION,
         "azure_endpoint": config.AZURE_OPENAI_ENDPOINT,
@@ -86,19 +86,16 @@ def run_pf_evaluation(data_df):
     
     for idx, row in data_df.iterrows():
         try:
-            # Prepare the data for each evaluator
             question = row['topic']
             answer = row['generated_text']
             context = row['ground_truth_keywords']
             
             print(f"Evaluating row {idx + 1}/{len(data_df)}: {row['prompt_name']} - {question[:50]}...")
             
-            # Run each evaluator individually with correct parameter names
             coherence_result = coherence_evaluator(query=question, response=answer)
             fluency_result = fluency_evaluator(response=answer)
             relevance_result = relevance_evaluator(query=question, response=answer)
             
-            # Combine results
             result_row = {
                 'inputs.prompt_name': row['prompt_name'],
                 'inputs.question': question,
@@ -114,7 +111,6 @@ def run_pf_evaluation(data_df):
                 'outputs.relevance.score': relevance_result.get('relevance', relevance_result.get('score', 0)),
             }
             
-            # Add model parameters
             for col in data_df.columns:
                 if col.startswith('param_'):
                     result_row[f'inputs.{col}'] = row[col]
@@ -123,7 +119,6 @@ def run_pf_evaluation(data_df):
             
         except Exception as e:
             print(f"Error evaluating row {idx}: {e}")
-            # Add a row with NaN scores for failed evaluations
             result_row = {
                 'inputs.prompt_name': row['prompt_name'],
                 'inputs.question': row['topic'],
@@ -139,7 +134,6 @@ def run_pf_evaluation(data_df):
                 'outputs.relevance.score': None,
             }
             
-            # Add model parameters
             for col in data_df.columns:
                 if col.startswith('param_'):
                     result_row[f'inputs.{col}'] = row[col]
@@ -152,7 +146,6 @@ def run_pf_evaluation(data_df):
     
     results_df = pd.DataFrame(results)
     
-    # Create a simple summary
     summary_data = {}
     for metric in ['coherence', 'fluency', 'relevance']:
         scores = results_df[f'outputs.{metric}.score'].dropna()
@@ -175,26 +168,21 @@ def flatten_and_clean_results(df):
     """
     clean_df = pd.DataFrame()
     
-    # Extract data from the 'inputs' part of the raw output.
-    # The evaluation was run with 'question', 'answer', 'context', so we map them back.
     if 'inputs.question' in df.columns:
         clean_df['topic'] = df['inputs.question']
     if 'inputs.answer' in df.columns:
         clean_df['generated_text'] = df['inputs.answer']
     
-    # Extract original data that was passed through
     passthrough_cols = ['prompt_name', 'latency', 'cost', 'prompt_tokens', 'completion_tokens', 'total_tokens']
     for col in passthrough_cols:
         if f'inputs.{col}' in df.columns:
             clean_df[col] = df[f'inputs.{col}']
 
-    # Extract model parameters
     param_cols = [c for c in df.columns if c.startswith('inputs.param_')]
     for col in param_cols:
         clean_name = col.replace('inputs.', '')
         clean_df[clean_name] = df[col]
 
-    # Extract evaluator scores
     if 'outputs.coherence.score' in df.columns:
         clean_df['coherence'] = df['outputs.coherence.score']
     if 'outputs.fluency.score' in df.columns:
@@ -202,11 +190,9 @@ def flatten_and_clean_results(df):
     if 'outputs.relevance.score' in df.columns:
         clean_df['relevance'] = df['outputs.relevance.score']
         
-    # Add custom evaluator results
     if 'keyword_match_score' in df.columns:
         clean_df['keyword_match_score'] = df['keyword_match_score']
 
-    # Define final column order
     final_column_order = [
         'prompt_name', 'topic', 'coherence', 'fluency', 'relevance', 'keyword_match_score',
         'latency', 'cost', 'prompt_tokens', 'completion_tokens', 'total_tokens'
@@ -219,6 +205,29 @@ def flatten_and_clean_results(df):
     
     return clean_df[existing_cols]
 
+# --- Function to validate metrics against thresholds ---
+def validate_metrics(metrics_df, thresholds):
+    """
+    Checks if any metric in the DataFrame is below its defined threshold.
+    Returns a list of failure messages.
+    """
+    print("\n--- Validating metrics against thresholds ---")
+    failures = []
+    
+    # Check each individual result row against the thresholds
+    for index, row in metrics_df.iterrows():
+        for metric, threshold in thresholds.items():
+            # Check if the metric exists in the row and is not a NaN value
+            if metric in row and pd.notna(row[metric]):
+                if row[metric] < threshold:
+                    failure_message = (
+                        f"VALIDATION FAILED for prompt '{row['prompt_name']}' on topic '{row['topic']}': "
+                        f"Metric '{metric}' score ({row[metric]:.2f}) is below threshold ({threshold})."
+                    )
+                    print(failure_message)
+                    failures.append(failure_message)
+                    
+    return failures
 
 def main():
     """Main function to run the evaluation pipeline."""
@@ -226,7 +235,6 @@ def main():
         print("Azure OpenAI credentials are not set. Please create a .env file and set the required variables.")
         return
 
-    # Generate a timestamp for unique output file names
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     prompts = load_prompts()
@@ -236,23 +244,16 @@ def main():
     eval_summary_df, pf_results_df = run_pf_evaluation(responses_df)
     
     if pf_results_df.empty:
-        print("Evaluation using Azure AI SDK failed. Skipping final report generation.")
-        # Still save the generated responses
-        os.makedirs(os.path.dirname(config.OUTPUT_FILE), exist_ok=True)
-        responses_df.to_csv(config.OUTPUT_FILE, index=False)
-        print(f"\nGeneration results saved to {config.OUTPUT_FILE}, but evaluation failed.")
-        return
+        print("Evaluation using Azure AI SDK failed. Exiting.")
+        sys.exit(1)
 
     print("Running custom evaluations (Keyword Match)...")
-    # We must run the custom evaluator on the raw results dataframe, which contains
-    # the 'answer' and 'context' columns before they are renamed by the cleaning function.
     custom_eval_results = pf_results_df.apply(
         lambda row: keyword_match_evaluator(row['inputs.context'], row['inputs.answer']), 
         axis=1, 
         result_type='expand'
     )
 
-    # Combine the promptflow results (which includes original data) and custom results
     raw_final_df = pd.concat([
         pf_results_df.reset_index(drop=True),
         custom_eval_results.reset_index(drop=True)
@@ -261,17 +262,13 @@ def main():
     print("\n--- Cleaning and structuring final results ---")
     final_df = flatten_and_clean_results(raw_final_df)
 
-    # Separate the data into two dataframes for clean outputs
-    # 1. A dataframe for just the metrics, for easy analysis
     metrics_cols = [col for col in final_df.columns if col != 'generated_text']
     metrics_df = final_df[metrics_cols]
     
-    # 2. A dataframe for the generated posts, for qualitative review
     posts_cols = ['prompt_name', 'topic', 'generated_text']
     posts_df = final_df[posts_cols]
 
-    # Define paths for the new, timestamped output files
-    output_dir = os.path.dirname(config.OUTPUT_FILE) # This gets the 'outputs' directory
+    output_dir = os.path.dirname(config.OUTPUT_FILE)
     metrics_output_file = os.path.join(output_dir, f"evaluation_metrics_{timestamp}.csv")
     posts_output_file = os.path.join(output_dir, f"generated_posts_{timestamp}.csv")
 
@@ -287,7 +284,16 @@ def main():
     print(eval_summary_df.to_string())
     print("\n--- Sample of Metrics Table ---")
     print(metrics_df.head().to_string())
+    
+    # --- Run the validation and exit with an error if it fails ---
+    failures = validate_metrics(metrics_df, config.EVALUATION_THRESHOLDS)
+    if failures:
+        print("\n\n--- 🚨 ACTION REQUIRED: One or more quality gates failed! ---")
+        # Exit with a non-zero status code to fail the GitHub Action
+        sys.exit(1) 
+    else:
+        print("\n\n--- ✅ All quality gates passed successfully! ---")
 
 
 if __name__ == "__main__":
-    main() 
+    main()

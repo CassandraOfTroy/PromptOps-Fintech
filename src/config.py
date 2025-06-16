@@ -32,5 +32,14 @@ class Config:
     # Prices per 1K tokens for a model like gpt-3.5-turbo
     PROMPT_TOKEN_PRICE = 0.0015
     COMPLETION_TOKEN_PRICE = 0.002
+    
+    # --- IMPORTANT:Define minimum acceptable scores for evaluation metrics ---
+    # These values are examples. Adjust them to your quality standards.
+    EVALUATION_THRESHOLDS = {
+        "coherence": 3.5,
+        "fluency": 3.5,
+        "relevance": 4.0,
+        "keyword_match_score": 0.2
+    }
 
-config = Config() 
+config = Config()
